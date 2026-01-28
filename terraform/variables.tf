@@ -143,3 +143,15 @@ variable "optimized_userdata" {
   type        = bool
   default     = false
 }
+
+# ============================================================================
+# Golden AMI 配置
+# ============================================================================
+
+variable "golden_ami_id" {
+  description = "Golden AMI ID with pre-pulled Docker images (leave empty to use default ECS AMI)"
+  type        = string
+  default     = ""
+  # 使用 Golden AMI 可减少冷启动 ~25-30s
+  # 构建方法: ./scripts/build-golden-ami.sh
+}

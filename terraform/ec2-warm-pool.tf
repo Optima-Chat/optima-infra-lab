@@ -173,7 +173,8 @@ resource "aws_security_group" "ec2" {
 
 resource "aws_launch_template" "ecs" {
   name_prefix   = "${var.project_name}-ecs-"
-  image_id      = data.aws_ssm_parameter.ecs_ami.value
+  # 优先使用 Golden AMI（预烘焙镜像），否则用默认 ECS AMI
+  image_id      = var.golden_ami_id != "" ? var.golden_ami_id : data.aws_ssm_parameter.ecs_ami.value
   instance_type = var.ec2_instance_type
 
   iam_instance_profile {
@@ -262,7 +263,7 @@ resource "aws_autoscaling_group" "ecs" {
 
   # 健康检查
   health_check_type         = "EC2"
-  health_check_grace_period = 60
+  health_check_grace_period = 30  # 减少等待时间，ECS Agent 通常 20s 内就绪
 
   # 实例刷新配置
   instance_refresh {
@@ -310,8 +311,9 @@ resource "aws_ecs_capacity_provider" "ec2" {
     managed_scaling {
       maximum_scaling_step_size = 2
       minimum_scaling_step_size = 1
-      status                    = "DISABLED"  # 禁用托管扩缩，手动控制测试
-      target_capacity           = 100
+      status                    = "ENABLED"   # 启用托管扩缩容
+      target_capacity           = 80          # 保持 20% 冗余，新任务秒启动
+      instance_warmup_period    = 60          # AWS 建议最低 60s
     }
   }
 
