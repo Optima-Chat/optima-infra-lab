@@ -88,6 +88,10 @@ variable "ec2_warm_pool_state" {
   description = "Warm pool instance state: Stopped, Hibernated, or Running"
   type        = string
   default     = "Hibernated"  # Hibernated 比 Stopped 启动更快
+  # 唤醒时间对比:
+  # - Running:    ~1-2s  (实例一直运行，EC2 全价)
+  # - Hibernated: ~17s   (内存休眠，仅 EBS 费用)
+  # - Stopped:    ~30-40s (完全停止，仅 EBS 费用)
 }
 
 variable "ec2_warm_pool_min_size" {
