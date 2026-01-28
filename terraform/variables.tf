@@ -129,3 +129,13 @@ variable "warm_pool_mode" {
   type        = bool
   default     = true
 }
+
+# ============================================================================
+# 启动优化配置
+# ============================================================================
+
+variable "optimized_userdata" {
+  description = "Use optimized User Data (reduced EBS warming)"
+  type        = bool
+  default     = false
+}

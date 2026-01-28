@@ -9,6 +9,65 @@ data "aws_ssm_parameter" "ecs_ami" {
 }
 
 # ============================================================================
+# User Data 版本
+# ============================================================================
+
+# 完整版 User Data (深度预热，~22s)
+locals {
+  userdata_full = <<-EOF
+    #!/bin/bash
+    set -ex
+    echo "EC2_BOOT_START=$(date +%s%3N)" >> /var/log/boot-timing.log
+
+    cat >> /etc/ecs/ecs.config <<ECSCONFIG
+    ECS_CLUSTER=${aws_ecs_cluster.test.name}
+    ECS_WARM_POOLS_CHECK=true
+    ECS_ENABLE_TASK_IAM_ROLE=true
+    ECS_IMAGE_PULL_BEHAVIOR=prefer-cached
+    ECSCONFIG
+
+    if [ ! -f /var/lib/cloud/instance/sem/ebs_warmed ]; then
+      echo "WARM_START=$(date +%s%3N)" >> /var/log/boot-timing.log
+      find /lib/modules -type f -exec cat {} \; > /dev/null 2>&1 || true
+      find /usr/bin /usr/sbin /usr/lib64 -type f -exec cat {} \; > /dev/null 2>&1 || true
+      find /var/lib/docker -type f -exec cat {} \; > /dev/null 2>&1 || true
+      find /var/lib/ecs -type f -exec cat {} \; > /dev/null 2>&1 || true
+      echo "WARM_END=$(date +%s%3N)" >> /var/log/boot-timing.log
+      touch /var/lib/cloud/instance/sem/ebs_warmed
+    fi
+
+    echo "EC2_WARM_DONE=$(date +%s%3N)" >> /var/log/boot-timing.log
+    systemctl enable ecs && systemctl start ecs
+    until curl -s http://localhost:51678/v1/metadata; do sleep 1; done
+    echo "ECS_AGENT_READY=$(date +%s%3N)" >> /var/log/boot-timing.log
+  EOF
+
+  # 优化版 User Data (零预热，让 EBS 按需加载)
+  userdata_optimized = <<-EOF
+    #!/bin/bash
+    set -ex
+    echo "EC2_BOOT_START=$(date +%s%3N)" >> /var/log/boot-timing.log
+
+    # 配置 ECS Agent
+    cat >> /etc/ecs/ecs.config <<ECSCONFIG
+    ECS_CLUSTER=${aws_ecs_cluster.test.name}
+    ECS_WARM_POOLS_CHECK=true
+    ECS_ENABLE_TASK_IAM_ROLE=true
+    ECS_IMAGE_PULL_BEHAVIOR=prefer-cached
+    ECSCONFIG
+
+    # 不预热！让 EBS 按需加载
+    # 首次冷启动: ECS/Docker 启动时自动加载需要的文件
+    # Warm Pool 恢复: EBS 已缓存，不受影响
+
+    echo "EC2_WARM_DONE=$(date +%s%3N)" >> /var/log/boot-timing.log
+    systemctl enable ecs && systemctl start ecs
+    until curl -s http://localhost:51678/v1/metadata; do sleep 1; done
+    echo "ECS_AGENT_READY=$(date +%s%3N)" >> /var/log/boot-timing.log
+  EOF
+}
+
+# ============================================================================
 # IAM Role for EC2 Instances
 # ============================================================================
 
@@ -144,73 +203,10 @@ resource "aws_launch_template" "ecs" {
     }
   }
 
-  # User Data: 配置 ECS Agent + 深度预热 EBS
-  user_data = base64encode(<<-EOF
-    #!/bin/bash
-    set -ex
-
-    # 记录启动时间
-    echo "EC2_BOOT_START=$(date +%s%3N)" >> /var/log/boot-timing.log
-
-    # 配置 ECS Agent（支持 Hibernation）
-    cat >> /etc/ecs/ecs.config <<ECSCONFIG
-    ECS_CLUSTER=${aws_ecs_cluster.test.name}
-    ECS_WARM_POOLS_CHECK=true
-    ECS_ENABLE_TASK_IAM_ROLE=true
-    ECS_ENABLE_TASK_IAM_ROLE_NETWORK_HOST=true
-    ECS_LOGLEVEL=info
-    ECSCONFIG
-
-    # 深度预热 EBS 卷（首次启动时读取所有文件，触发从 S3 完全加载）
-    # 参考: https://depot.dev/blog/faster-ec2-boot-time
-    if [ ! -f /var/lib/cloud/instance/sem/ebs_warmed ]; then
-      echo "Deep warming EBS volume..."
-      WARM_START=$(date +%s)
-
-      # 1. 预热内核和系统文件（最关键）
-      echo "Warming kernel modules..."
-      find /lib/modules -type f -exec cat {} \; > /dev/null 2>&1 || true
-
-      # 2. 预热系统二进制和库
-      echo "Warming system binaries..."
-      find /usr/bin /usr/sbin /usr/lib64 -type f -exec cat {} \; > /dev/null 2>&1 || true
-
-      # 3. 预热 Docker 相关文件
-      echo "Warming Docker..."
-      find /var/lib/docker -type f -exec cat {} \; > /dev/null 2>&1 || true
-
-      # 4. 预热 ECS Agent
-      echo "Warming ECS Agent..."
-      find /var/lib/ecs -type f -exec cat {} \; > /dev/null 2>&1 || true
-
-      # 5. 预拉取 Docker 镜像
-      if [ -n "${aws_ecr_repository.test.repository_url}" ]; then
-        echo "Pulling Docker image..."
-        aws ecr get-login-password --region ${var.aws_region} | docker login --username AWS --password-stdin ${aws_ecr_repository.test.repository_url}
-        docker pull ${aws_ecr_repository.test.repository_url}:latest || true
-      fi
-
-      WARM_END=$(date +%s)
-      echo "EBS warming complete in $((WARM_END - WARM_START)) seconds"
-      touch /var/lib/cloud/instance/sem/ebs_warmed
-    else
-      echo "EBS already warmed, skipping"
-    fi
-
-    # 记录预热完成时间
-    echo "EC2_WARM_DONE=$(date +%s%3N)" >> /var/log/boot-timing.log
-
-    # 确保 ECS 服务启动（Amazon Linux 2023 需要手动启动）
-    systemctl enable ecs
-    systemctl start ecs
-
-    # 等待 ECS Agent 注册
-    until curl -s http://localhost:51678/v1/metadata; do
-      sleep 1
-    done
-    echo "ECS_AGENT_READY=$(date +%s%3N)" >> /var/log/boot-timing.log
-  EOF
-  )
+  # User Data: 配置 ECS Agent + EBS 预热
+  # var.optimized_userdata=true 时使用精简版预热（只预热 Docker/ECS）
+  # var.optimized_userdata=false 时使用深度预热（预热全部系统文件）
+  user_data = base64encode(var.optimized_userdata ? local.userdata_optimized : local.userdata_full)
 
   tag_specifications {
     resource_type = "instance"
