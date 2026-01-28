@@ -365,10 +365,10 @@ test_phase_c() {
   log_info "开始时间: $(timestamp_readable)"
 
   # C1: 启动实例
+  # 注意: Launch Template 已包含网络接口配置，不能再指定 subnet-id
   log_info "启动新 EC2 实例..."
   INSTANCE_ID=$(aws ec2 run-instances \
     --launch-template "LaunchTemplateId=$LAUNCH_TEMPLATE_ID,Version=$LAUNCH_TEMPLATE_VERSION" \
-    --subnet-id "$SUBNET_ID" \
     --region "$REGION" \
     --query 'Instances[0].InstanceId' \
     --output text)
