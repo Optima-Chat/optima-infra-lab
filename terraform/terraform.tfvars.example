@@ -1,0 +1,57 @@
+# 复制此文件为 terraform.tfvars 并填写实际值
+#
+# cp terraform.tfvars.example terraform.tfvars
+# vim terraform.tfvars
+
+# AWS 区域
+aws_region = "ap-southeast-1"
+
+# 项目名称
+project_name = "optima-infra-lab"
+
+# VPC ID（使用现有 VPC）
+vpc_id = "vpc-xxxxxxxxx"
+
+# 私有子网 IDs（Fargate 用）
+private_subnet_ids = [
+  "subnet-xxxxxxxxx",
+  "subnet-yyyyyyyyy",
+]
+
+# 公有子网 IDs（EC2 测试用，可选）
+public_subnet_ids = [
+  "subnet-xxxxxxxxx",
+  "subnet-yyyyyyyyy",
+]
+
+# ============================================================================
+# EC2 Warm Pool 配置
+# ============================================================================
+
+ec2_instance_type = "t3.small"  # 2 vCPU, 2GB RAM
+
+# ASG 配置
+ec2_asg_min_size         = 0
+ec2_asg_max_size         = 5
+ec2_asg_desired_capacity = 1
+
+# Warm Pool 配置
+ec2_warm_pool_state    = "Hibernated"  # Stopped, Hibernated, Running
+ec2_warm_pool_min_size = 2
+ec2_warm_pool_max_size = 3
+
+# EC2 ECS Service
+ec2_service_desired_count = 1
+
+# ============================================================================
+# AI Shell 镜像配置（可选）
+# ============================================================================
+
+# 使用 AI Shell 镜像而非测试镜像
+use_ai_shell_image = false
+
+# AI Shell ECR 镜像 URI
+ai_shell_image = "585891120210.dkr.ecr.ap-southeast-1.amazonaws.com/optima-ai-shell:latest"
+
+# 启用预热池模式
+warm_pool_mode = true
