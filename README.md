@@ -1,8 +1,16 @@
 # Optima Infra Lab
 
-Optima 基础设施实验室 - 用于测试和验证各种基础设施优化方案。
+Optima 基础设施实验室 - 专注于 AI Shell 的成本、扩展性和性能优化。
 
-## 当前实验
+## 项目定位
+
+当前主要任务：**AI Shell 基础设施优化**
+
+- 降低成本（EC2 Warm Pool、Spot 实例）
+- 提升扩展性（ASG 自动伸缩、容量规划）
+- 优化性能（启动时间、冷启动、镜像预拉取）
+
+## 优化成果
 
 ### 🚀 ECS Task 预热池
 
@@ -18,6 +26,25 @@ EC2 Warm Pool:     22,000 ms  ████████████████�
 ```
 
 详见 [测试结果](docs/task-prewarming-results.md)
+
+### 🐳 EC2 镜像预拉取
+
+**问题**: 新 EC2 首次启动 Task 需要 44 秒拉取镜像
+
+**方案**: 在 Launch Template user_data 中预拉取镜像
+
+**效果**: 镜像拉取时间 44s → **0s**（已缓存）
+
+详见 [实施文档](docs/ec2-image-prepull.md)
+
+## 测试结果汇总
+
+| 实验 | 指标 | 结果 | 文档 |
+|------|------|------|------|
+| EC2 Warm Pool | 启动时间 | ~22s (从 Stopped) | [详情](docs/ec2-warm-pool-results.md) |
+| Task 预热池 | 端到端延迟 | ~260ms | [详情](docs/task-prewarming-results.md) |
+| 容量策略模拟 | 等待时间分布 | 见报告 | [详情](docs/capacity-simulation.md) |
+| EC2 镜像预拉取 | 首次 Task 启动 | 44s → <1s | [详情](docs/ec2-image-prepull.md) |
 
 ## 项目结构
 
@@ -37,9 +64,11 @@ optima-infra-lab/
 │   └── ...
 └── docs/              # 测试报告和文档
     ├── ec2-warm-pool-results.md
+    ├── ec2-image-prepull.md     # 🆕 镜像预拉取优化
     ├── task-prewarming-plan.md
     ├── task-prewarming-results.md
-    └── capacity-simulation.md
+    ├── capacity-simulation.md
+    └── startup-optimization.md  # 启动时间优化方案汇总
 ```
 
 ## 快速开始
@@ -72,22 +101,16 @@ cd terraform
 terraform apply -var="use_ai_shell_image=true"
 ```
 
-## 测试结果汇总
-
-| 实验 | 指标 | 结果 | 文档 |
-|------|------|------|------|
-| EC2 Warm Pool | 启动时间 | ~22s (从 Stopped) | [详情](docs/ec2-warm-pool-results.md) |
-| Task 预热池 | 端到端延迟 | ~260ms | [详情](docs/task-prewarming-results.md) |
-| 容量策略模拟 | 等待时间分布 | 见报告 | [详情](docs/capacity-simulation.md) |
-
 ## 相关项目
 
 - [optima-ai-shell](https://github.com/Optima-Chat/optima-ai-shell) - AI Shell 主项目
+- [optima-terraform](https://github.com/Optima-Chat/optima-terraform) - 生产基础设施配置
 - [session-gateway](https://github.com/Optima-Chat/optima-ai-shell/tree/main/packages/session-gateway) - Session Gateway
 
 ## 未来实验计划
 
-- [ ] Golden AMI 自动构建
+- [ ] Golden AMI 自动构建（Packer）
 - [ ] Fargate Spot 中断测试
 - [ ] 多 AZ 容量策略
 - [ ] EFS 性能模式对比
+- [ ] 共享 AP + Task 预热池实施

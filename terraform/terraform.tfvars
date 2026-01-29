@@ -43,3 +43,13 @@ ec2_warm_pool_max_size = 3             # 最大预热容量（测试用，减少
 
 # EC2 ECS Service
 ec2_service_desired_count = 1
+
+# ============================================================================
+# 启动优化配置
+# ============================================================================
+
+# Golden AMI - 预拉取 Docker 镜像，减少冷启动 ~25s
+golden_ami_id = "ami-023f17f486dc51728"
+
+# 使用零预热 User Data
+optimized_userdata = true
