@@ -107,9 +107,24 @@ terraform apply -var="use_ai_shell_image=true"
 - [optima-terraform](https://github.com/Optima-Chat/optima-terraform) - 生产基础设施配置
 - [session-gateway](https://github.com/Optima-Chat/optima-ai-shell/tree/main/packages/session-gateway) - Session Gateway
 
+### 🏗️ Golden AMI 自动构建
+
+**目标**: 进一步减少 EC2 冷启动时间
+
+**状态**: 🚧 配置已创建，待测试
+
+```bash
+# 手动构建
+cd packer && ./build.sh
+
+# 或使用 GitHub Actions
+```
+
+详见 [Golden AMI 文档](docs/golden-ami.md)
+
 ## 未来实验计划
 
-- [ ] Golden AMI 自动构建（Packer）
+- [x] Golden AMI 自动构建（Packer）- 配置已创建
 - [ ] Fargate Spot 中断测试
 - [ ] 多 AZ 容量策略
 - [ ] EFS 性能模式对比

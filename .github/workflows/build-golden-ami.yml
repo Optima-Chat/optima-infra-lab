@@ -1,0 +1,123 @@
+name: Build Golden AMI
+
+on:
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker 镜像 tag'
+        required: false
+        default: 'latest'
+      ecs_cluster:
+        description: 'ECS 集群名称'
+        required: false
+        default: 'optima-prod-cluster'
+      update_launch_template:
+        description: '是否更新 Launch Template'
+        required: false
+        default: 'false'
+        type: boolean
+
+  # 当 AI Shell 镜像构建完成后触发（可选）
+  # repository_dispatch:
+  #   types: [ai-shell-image-built]
+
+env:
+  AWS_REGION: ap-southeast-1
+  ECR_REPOSITORY: 585891120210.dkr.ecr.ap-southeast-1.amazonaws.com/optima-ai-shell
+
+jobs:
+  build-ami:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: latest
+
+      - name: Packer Init
+        working-directory: packer
+        run: packer init ai-shell-golden.pkr.hcl
+
+      - name: Packer Validate
+        working-directory: packer
+        run: |
+          packer validate \
+            -var="ecr_image_tag=${{ github.event.inputs.image_tag || 'latest' }}" \
+            -var="ecs_cluster_name=${{ github.event.inputs.ecs_cluster || 'optima-prod-cluster' }}" \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            ai-shell-golden.pkr.hcl
+
+      - name: Build Golden AMI
+        working-directory: packer
+        run: |
+          packer build \
+            -var="ecr_image_tag=${{ github.event.inputs.image_tag || 'latest' }}" \
+            -var="ecs_cluster_name=${{ github.event.inputs.ecs_cluster || 'optima-prod-cluster' }}" \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            ai-shell-golden.pkr.hcl
+
+      - name: Extract AMI ID
+        id: ami
+        working-directory: packer
+        run: |
+          AMI_ID=$(jq -r '.builds[-1].artifact_id' manifest.json | cut -d':' -f2)
+          echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
+          echo "## Golden AMI Built" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**AMI ID:** \`$AMI_ID\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Tag:** ${{ github.event.inputs.image_tag || 'latest' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**ECS Cluster:** ${{ github.event.inputs.ecs_cluster || 'optima-prod-cluster' }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Update Launch Template (Optional)
+        if: ${{ github.event.inputs.update_launch_template == 'true' }}
+        run: |
+          echo "Updating Launch Template with new AMI: ${{ steps.ami.outputs.ami_id }}"
+
+          # 创建新版本
+          aws ec2 create-launch-template-version \
+            --launch-template-name ai-shell-prod-ecs \
+            --source-version '$Latest' \
+            --launch-template-data '{"ImageId":"${{ steps.ami.outputs.ami_id }}"}' \
+            --region ${{ env.AWS_REGION }}
+
+          # 设为默认版本
+          aws ec2 modify-launch-template \
+            --launch-template-name ai-shell-prod-ecs \
+            --default-version '$Latest' \
+            --region ${{ env.AWS_REGION }}
+
+          echo "Launch Template updated!"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Launch Template:** Updated to use new AMI" >> $GITHUB_STEP_SUMMARY
+
+    outputs:
+      ami_id: ${{ steps.ami.outputs.ami_id }}
+
+  # 可选：触发 Instance Refresh
+  # refresh-instances:
+  #   needs: build-ami
+  #   if: ${{ github.event.inputs.update_launch_template == 'true' }}
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Start Instance Refresh
+  #       run: |
+  #         aws autoscaling start-instance-refresh \
+  #           --auto-scaling-group-name ai-shell-prod-ecs-asg \
+  #           --preferences '{"MinHealthyPercentage": 50}' \
+  #           --region ap-southeast-1
