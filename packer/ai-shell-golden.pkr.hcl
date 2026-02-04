@@ -65,6 +65,12 @@ variable "subnet_id" {
   description = "构建用子网 ID（可选，留空使用默认 VPC）"
 }
 
+variable "iam_instance_profile" {
+  type        = string
+  default     = "packer-ecr-access"
+  description = "IAM Instance Profile（需要 ECR 读取权限）"
+}
+
 # ==============================================================================
 # 数据源 - 获取最新的 ECS 优化 AMI
 # ==============================================================================
@@ -94,6 +100,9 @@ source "amazon-ebs" "golden" {
   # 网络配置
   subnet_id                   = var.subnet_id != "" ? var.subnet_id : null
   associate_public_ip_address = true
+
+  # IAM Instance Profile（用于访问 ECR）
+  iam_instance_profile = var.iam_instance_profile
 
   # SSH 配置
   ssh_username         = "ec2-user"
