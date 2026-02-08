@@ -1,7 +1,7 @@
 # AI Shell 综合改进计划：稳定性 + 可观测性 + 架构迁移
 
 > **日期**: 2026-02-08
-> **状态**: Phase 0-1 已完成，已合并 main，Stage 已验证，Prod 待部署
+> **状态**: Phase 0-1 已完成并合并 main | Phase 2+3 Stage 基本通过，待 Prod 部署
 > **涉及仓库**: optima-ai-shell, optima-terraform, optima-infra-lab
 
 ---
@@ -17,8 +17,11 @@
 ```
 Phase 0: 紧急修复 (1天)        ✅ 已完成 — 已合并 main，Stage 已验证
 Phase 1: 可观测性 (2-3天)      ✅ 已完成 — 已合并 main，Stage 日志/日报/查询模板均已验证
-Phase 2: 共享 AP + 固定 TD (3-5天) ← 架构迁移第一步（详见 ai-shell-migration-plan.md Phase 1）
-Phase 3: 预热池 (5-7天)        ← 启动时间 5s → 260ms（详见 ai-shell-migration-plan.md Phase 2）
+Phase 2+3: 共享 AP + 预热池      ✅ Stage 基本通过 — 预热 47ms, 首字 4s, resume 正常
+```
+
+```
+Prod 部署待定: Phase 2+3 待验证项全部通过后合并 main 部署
 ```
 
 ---
@@ -467,41 +470,108 @@ fields @timestamp, @message
 
 ---
 
-## Phase 2: 共享 AP + 固定 TaskDef (3-5天)
+## Phase 2+3: 共享 AP + 固定 TaskDef + 预热池 ✅ Stage 基本通过
 
-> 详细方案见 [ai-shell-migration-plan.md](./ai-shell-migration-plan.md) Phase 1
+> **分支**: `feature/phase2-3-warm-pool` (optima-ai-shell)
+> **Terraform**: `dd4d8d9` on main (optima-terraform)
+> **Stage 验证日期**: 2026-02-08
+> **详细实施方案**: [Claude Plan](~/.claude/plans/wild-floating-wren.md)
 
-**核心改动**:
+Phase 2 和 Phase 3 合并在一个分支中实施，因为共享 AP 是预热池的前提。
 
-| 任务 | 文件/位置 | 说明 |
-|------|----------|------|
-| 创建共享 EFS Access Point | `optima-terraform/stacks/ai-shell-ecs/` | rootDir=`/workspaces/{env}`，UID/GID=1000 |
-| 简化 AP 管理 | `access-point-manager.ts` | 不再动态创建 AP，读取固定 AP ID |
-| 删除动态 TaskDef 注册 | `ecs-bridge.ts` | 删除 `registerUserTaskDefinition()`，改用 RunTask overrides |
-| 容器目录初始化 | `ws-bridge.js` | 从环境变量读取 userId，初始化用户目录 |
+### 核心改动
 
-**预期效果**: 启动时间 -1~2s（省去 AP 创建 + TaskDef 注册），消除 TaskDef 版本膨胀
+#### Phase 2: 共享 AP + 固定 TaskDef
 
-**回滚方案**: 环境变量开关 `USE_SHARED_AP=true/false`
+| 任务 | 文件/位置 | 说明 | 状态 |
+|------|----------|------|------|
+| 创建共享 EFS Access Point | `optima-terraform` `modules/ai-shell-ecs/main.tf` | rootDir=`/workspaces/{env}`，共享 AP `fsap-0b5c731caa40bb7bb` | ✅ Stage apply |
+| 固定 TaskDef | `optima-terraform` `modules/ai-shell-ecs/main.tf` | volume 使用固定共享 AP，mountPath `/mnt/efs` | ✅ Stage apply |
+| 简化 ecs-bridge | `session-gateway` `bridges/ecs-bridge.ts` | 删除动态 AP/TaskDef，改用 container overrides 传递用户信息 | ✅ |
+| Symlink 兼容 | `docker/ws-bridge.js` | `/home/aiuser` → `/mnt/efs/{userId}` symlink，所有文件 API 无需修改 | ✅ |
+| Dockerfile 权限 | `docker/Dockerfile` | `chmod 1777 /home` 允许 aiuser 创建 symlink | ✅ |
 
----
+#### Phase 3: 预热池
 
-## Phase 3: 预热池 (5-7天)
+| 任务 | 文件/位置 | 说明 | 状态 |
+|------|----------|------|------|
+| WarmPoolManager | `session-gateway` `services/warm-pool-manager.ts` | **新增**，管理预热 Task 池，支持 acquire/replenish/evict | ✅ |
+| 预热模式 | `docker/ws-bridge.js` | `WARM_POOL_MODE=true` 时连接 `/internal/warm/{taskId}`，等待 `init_user` | ✅ |
+| 内部端点 | `session-gateway` `index.ts` | `/internal/warm/{taskId}` 接收预热 Task 连接 | ✅ |
+| EcsBridge 集成 | `session-gateway` `bridges/ecs-bridge.ts` | 新增 `startFromWarmTask()` + `waitForWarmReady()` | ✅ |
+| 过期淘汰 | `session-gateway` `services/warm-pool-manager.ts` | ready task 超过 TTL 自动停止并补充 | ✅ |
 
-> 详细方案见 [ai-shell-migration-plan.md](./ai-shell-migration-plan.md) Phase 2
+### 提交历史 (optima-ai-shell, feature/phase2-3-warm-pool)
 
-**核心改动**:
+```
+f7bfea1 debug: 启用 DEBUG_CLAUDE_AGENT_SDK 捕获 resume 崩溃原因
+66921a0 fix: 允许 aiuser 在 /home 下创建 symlink (chmod 1777)
+db0dac2 fix: 修复 ws-bridge symlink 创建失败 (require is not defined)
+15b7c17 fix: warm pool task 传递正确的 GATEWAY_WS_URL
+da5845e feat: 添加 warm pool ready task 过期淘汰机制
+38d95ad fix: 修复 warm pool manager 无限启动 bug + 环境变量穿透
+6189835 fix: 使用 symlink 保持 /home/aiuser 路径兼容
+b65e0e4 test: 更新 ecs-bridge 测试适配 Phase 2 变更
+f7a8a77 feat: Phase 2+3 共享 AP + 固定 TaskDef + 预热池
+2e57bcc merge: Phase 0-1 稳定性修复 + 可观测性改造
+```
 
-| 任务 | 文件/位置 | 说明 |
-|------|----------|------|
-| 新增 WarmPoolManager | `services/warm-pool-manager.ts` | 管理预热 Task 池 |
-| ws-bridge.js 预热模式 | `ws-bridge.js` | 先连接 Gateway，等待 init_user 后再启动 optima |
-| 新增内部端点 | `index.ts` | `/internal/warm/{taskId}` 接收预热 Task 连接 |
-| EcsBridge 改造 | `ecs-bridge.ts` | 新增 `startFromWarm()` 方法 |
+### Stage 验证结果 (2026-02-08)
 
-**预期效果**: 启动时间 5s → 260ms（有预热时）
+#### 1. 预热池 ✅
+- 预热 task 成功连接 `/internal/warm/{taskId}`
+- acquire 耗时: **47ms**，总重启时间: **368ms**
 
-**回滚方案**: 环境变量开关 `ENABLE_WARM_POOL=true/false`
+#### 2. 会话对话 ✅
+- 新建会话正常，AI 正常回复
+- 首字到达: ~4s，回复完成: ~6-10s
+
+#### 3. Session Resume ✅ 已修复
+- **问题发现**: idle 超时后重连，Claude Code `--resume` 崩溃（exit code 1）
+- **根因**: symlink 中 `require('fs')` 在 ESM 失败 + `/home` 权限不足
+- **额外发现**: Claude Agent SDK 默认 `stderr="ignore"`，完全隐藏崩溃原因
+- **修复后**: resume 成功，AI 记住之前对话内容
+
+#### 4. 性能对比
+
+| 消息 | 预热池 | SESSION_RESET | 首字到达 | 回复完成 |
+|------|--------|--------------|---------|---------|
+| 旧代码 (symlink bug) | +41ms | ⚠️ +2968ms | +7624ms | +12363ms |
+| 旧代码 (第二条) | +45ms | ⚠️ +3520ms | +8484ms | +20414ms |
+| **修复后** | +47ms | ✅ 无 | +4268ms | +6848ms |
+| 同进程后续消息 | N/A | ✅ 无 | +3869ms | +6624ms |
+
+**关键改善**: SESSION_RESET 消除，首字到达 ~8s→~4s (-50%)，回复完成 ~12-20s→~6-10s
+
+#### 5. 待验证
+
+- [ ] 跨容器 resume（idle 超时 → 新 warm task → 验证 AI 记忆）
+- [ ] 池耗尽 fallback 到冷启动
+- [ ] 多用户隔离
+- [ ] 长时间运行稳定性
+
+#### 6. 待清理
+
+- [ ] 移除或条件化 `DEBUG_CLAUDE_AGENT_SDK = '1'`
+- [ ] 清理 deprecated `registerUserTaskDefinition()` 方法
+
+### 功能开关
+
+| 环境变量 | 默认值 | 说明 |
+|---------|--------|------|
+| `ENABLE_WARM_POOL` | `false` | 主开关 |
+| `WARM_POOL_TARGET_SIZE` | `3` | 预热池目标大小 |
+| `WARM_POOL_MAX_SIZE` | `10` | 预热池最大大小 |
+
+**回滚**: `ENABLE_WARM_POOL=false` → 所有新会话走冷启动，预热 task 自动过期停止
+
+### Prod 部署 ⏳ 待定
+
+- **前提**: 待验证项目全部通过
+- **Terraform**: `terraform apply` prod 模块（创建 prod 共享 AP + 更新 TaskDef）
+- **Infisical**: `ECS_TASK_DEFINITION` → `ai-shell-prod-user-task`（去掉 revision 号）
+- **镜像 + Gateway**: 合并到 main 后从 main 分支部署
+- **预热池**: 先 `ENABLE_WARM_POOL=false`，验证通过后再启用
 
 ---
 
@@ -525,8 +595,14 @@ fields @timestamp, @message
 | `session-gateway/src/utils/message-transformer.ts` | 1 | 结构化日志 | ✅ |
 | `optima-infra-lab/scripts/daily_report.py` | 1 | **新增** 日报脚本 | ✅ |
 | `optima-infra-lab/scripts/queries/*.query` (6 文件) | 1 | **新增** 查询模板 | ✅ |
-| `session-gateway/src/services/access-point-manager.ts` | 2 | 简化为读取固定 AP | 未开始 |
-| `session-gateway/src/services/warm-pool-manager.ts` | 3 | **新增** 预热池管理 | 未开始 |
+| `session-gateway/src/bridges/ecs-bridge.ts` | 2+3 | 简化 start() + startFromWarmTask() + container overrides | ✅ |
+| `session-gateway/src/services/warm-pool-manager.ts` | 3 | **新增** 预热池管理 | ✅ |
+| `session-gateway/src/index.ts` | 3 | 新增 `/internal/warm/{taskId}` 端点 | ✅ |
+| `session-gateway/src/ws-connection-handler.ts` | 2+3 | 集成 warm pool acquire | ✅ |
+| `docker/ws-bridge.js` | 2+3 | 预热模式 + symlink 兼容 + DEBUG_CLAUDE_AGENT_SDK | ✅ |
+| `docker/entrypoint.sh` | 2 | 共享 AP 目录初始化 | ✅ |
+| `docker/Dockerfile` | 2 | chmod 1777 /home | ✅ |
+| `infrastructure/optima-terraform/modules/ai-shell-ecs/main.tf` | 2+3 | 共享 AP + 固定 TaskDef + WARM_POOL_MODE env | ✅ Stage apply |
 
 ---
 
@@ -545,12 +621,11 @@ Phase 0 后 (修复竞态 + 错误通知):
 Phase 1 后 (可观测性):
   所有用户:  ████████████████████ 3-5s (不变，但能精确度量每个阶段)
 
-Phase 2 后 (共享 AP + 固定 TaskDef):
-  所有用户:  ██████████████ 3s (-1~2s)
-
-Phase 3 后 (预热池):
-  有预热:    █ 260ms 🚀 (-98%)
-  池空:      ██████████████ 3s (fallback)
+Phase 2+3 后 (共享 AP + 固定 TaskDef + 预热池) — Stage 实测:
+  有预热:    █ 47ms acquire + 368ms 总重启 🚀
+  池空:      ██████████████ ~3s (fallback 冷启动)
+  首字到达:  从 ~8s 降到 ~4s (-50%)
+  回复完成:  从 ~12-20s 降到 ~6-10s
 ```
 
 ### 稳定性提升
