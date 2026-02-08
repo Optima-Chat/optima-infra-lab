@@ -23,10 +23,10 @@ from typing import Any
 
 import boto3
 
-# 日志组映射
+# 日志组映射（session-gateway 有独立的日志组）
 LOG_GROUPS = {
-    "stage": "/ecs/ai-shell-stage",
-    "prod": "/ecs/ai-shell-prod",
+    "stage": "/ecs/session-gateway-stage",
+    "prod": "/ecs/session-gateway-prod",
 }
 
 REGION = "ap-southeast-1"
@@ -59,12 +59,11 @@ fields @timestamp, phase, duration_ms
 """,
 
     "restart_stats": """
-fields @timestamp
+fields @timestamp, success, duration_ms
 | filter event = "task_lifecycle" and phase = "restart"
 | stats count() as total,
-        sum(case when success = 1 then 1 else 0 end) as success_count,
-        sum(case when success = 0 then 1 else 0 end) as failure_count,
         avg(duration_ms) as avg_restart_ms
+  by success
 """,
 
     "errors": """
@@ -109,6 +108,13 @@ fields @timestamp
 | filter userId != "" and event = "task_lifecycle" and phase = "session_create"
 | stats count() as sessions by userId
 | stats count() as unique_users, sum(sessions) as total_sessions
+""",
+
+    "user_sessions": """
+fields @timestamp, userId, userEmail, sessionId
+| filter event = "task_lifecycle" and phase = "session_create"
+| sort @timestamp desc
+| limit 50
 """,
 }
 
@@ -199,9 +205,16 @@ def format_report_md(data: dict) -> str:
     user_rows = data.get("unique_users", [])
     unique_users = int(user_rows[0].get("unique_users", 0)) if user_rows else 0
     restart_rows = data.get("restart_stats", [])
-    restart_total = int(restart_rows[0].get("total", 0)) if restart_rows else 0
-    restart_success = int(restart_rows[0].get("success_count", 0)) if restart_rows else 0
-    restart_failure = int(restart_rows[0].get("failure_count", 0)) if restart_rows else 0
+    restart_total = 0
+    restart_success = 0
+    restart_failure = 0
+    for row in restart_rows:
+        count = int(row.get("total", 0))
+        restart_total += count
+        if row.get("success") == "1":
+            restart_success = count
+        else:
+            restart_failure = count
     idle_rows = data.get("idle_timeouts", [])
     idle_count = int(idle_rows[0].get("total", 0)) if idle_rows else 0
 
@@ -210,6 +223,19 @@ def format_report_md(data: dict) -> str:
     lines.append(f"- Task 重启: **{restart_total}** (成功 {restart_success}, 失败 {restart_failure})")
     lines.append(f"- 空闲超时: **{idle_count}**")
     lines.append("")
+
+    # 用户会话明细
+    user_session_rows = data.get("user_sessions", [])
+    if user_session_rows:
+        lines.append("### 会话明细")
+        lines.append("| 时间 | 用户 | 会话 ID |")
+        lines.append("|------|------|---------|")
+        for row in user_session_rows:
+            ts = row.get("@timestamp", "")[:19]
+            email = row.get("userEmail", row.get("userId", "N/A"))
+            sid = row.get("sessionId", "N/A")[:12]
+            lines.append(f"| {ts} | {email} | {sid}... |")
+        lines.append("")
 
     # 启动耗时
     lines.append("## 启动耗时")
