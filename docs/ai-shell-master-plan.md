@@ -451,9 +451,11 @@ fields @timestamp, @message
 1. **AMI 更新**: `ami-0bbc16506b71ca849` → `ami-080e5034ac2b93626`（新版 ECS-optimized AMI）
 2. **user_data 镜像预拉取**: 增加 EC2 启动时后台 `docker pull` 预拉取 AI Shell 镜像
 
-**影响**: 当前 PENDING→RUNNING 的 3.7s (P50) 包含了每次现场从 ECR 拉取镜像的时间。Apply 后新 EC2 实例将预缓存镜像，预计可显著降低此阶段耗时。
+**影响说明**: 这是个小改动，只影响 **全新 EC2 实例的第一个 task**（如 ASG 扩容、instance refresh）。日常运行中，镜像已被之前的 task 缓存在 Docker 本地，PENDING→RUNNING 的 3.7s (P50) 与镜像拉取无关。3.7s 主要来自 ECS 调度、Docker 容器创建、EFS 挂载、ECS Agent 状态上报等开销。
 
-**操作**: 需要 `terraform apply` 更新 launch template，然后 instance refresh 或终止旧实例让 ASG 用新模板重建。
+**优先级**: 低。可在下次需要 instance refresh 或其他 Terraform 变更时一并 apply。
+
+**操作**: `terraform apply` 更新 launch template → instance refresh 或终止旧实例让 ASG 用新模板重建。
 
 ---
 
