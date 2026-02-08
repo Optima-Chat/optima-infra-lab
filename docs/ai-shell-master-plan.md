@@ -444,18 +444,26 @@ fields @timestamp, @message
 
 ---
 
-## ⚠️ 待处理: Terraform Launch Template 未 Apply
+## ✅ 已处理: Terraform Launch Template Apply + 启动耗时基线测试
 
-`infrastructure/optima-terraform/stacks/ai-shell-ecs/` 中有 **未 apply 的变更**，stage 和 prod 都受影响：
+`infrastructure/optima-terraform/stacks/ai-shell-ecs/` Launch Template 已 apply（2026-02-08）：
 
 1. **AMI 更新**: `ami-0bbc16506b71ca849` → `ami-080e5034ac2b93626`（新版 ECS-optimized AMI）
 2. **user_data 镜像预拉取**: 增加 EC2 启动时后台 `docker pull` 预拉取 AI Shell 镜像
 
-**影响说明**: 这是个小改动，只影响 **全新 EC2 实例的第一个 task**（如 ASG 扩容、instance refresh）。日常运行中，镜像已被之前的 task 缓存在 Docker 本地，PENDING→RUNNING 的 3.7s (P50) 与镜像拉取无关。3.7s 主要来自 ECS 调度、Docker 容器创建、EFS 挂载、ECS Agent 状态上报等开销。
+**Apply 状态**: Stage ✅ + instance refresh 完成 | Prod ✅ launch template 已更新（现有实例不受影响）
 
-**优先级**: 低。可在下次需要 instance refresh 或其他 Terraform 变更时一并 apply。
+**Stage 启动耗时基线测试** (直接 RunTask + DescribeTasks 轮询):
 
-**操作**: `terraform apply` 更新 launch template → instance refresh 或终止旧实例让 ASG 用新模板重建。
+| | 旧实例 (LT v2) | 新实例 (LT v3) |
+|---|---|---|
+| Run 1 | 2006ms | 3903ms |
+| Run 2 | 3857ms | 2683ms |
+| Run 3 | 3367ms | 1971ms |
+| Run 4 | 3221ms | 2022ms |
+| **平均** | **3113ms** | **2645ms** |
+
+**结论**: 镜像预拉取对日常 PENDING→RUNNING 无显著影响（镜像已被之前 task 缓存）。2-4s 波动来自 ECS 调度 + 容器创建 + EFS 挂载，需要 Phase 3 预热池才能根本优化。
 
 ---
 
