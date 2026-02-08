@@ -1,0 +1,11 @@
+# WebSocket 断开原因和状态分析
+# 日志组: /ecs/ai-shell-prod 或 /ecs/ai-shell-stage
+# 用途: 分析客户端断开时 AI 的处理状态
+#   - idle: 正常空闲断开
+#   - processing: AI 正在处理时断开 (可能丢失回复)
+#   - waiting_for_answer: AI 等待用户回答时断开
+
+fields @timestamp, processingState, sessionId, userId
+| filter event = "task_lifecycle" and phase = "ws_disconnect"
+| stats count() as total by processingState
+| sort total desc

@@ -1,0 +1,9 @@
+# 用户活跃度和会话数
+# 日志组: /ecs/ai-shell-prod 或 /ecs/ai-shell-stage
+# 用途: 了解用户使用模式，识别高活跃用户
+
+fields @timestamp, userId, sessionId
+| filter event = "task_lifecycle" and phase = "session_create"
+| stats count() as sessions by userId
+| sort sessions desc
+| limit 50

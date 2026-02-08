@@ -1,0 +1,14 @@
+# 消息响应延迟 (首字延迟)
+# 日志组: /ecs/ai-shell-prod 或 /ecs/ai-shell-stage
+# 用途: 监控用户发送消息到 AI 首个回复的时间
+#   反映 Anthropic API 延迟 + 消息传输延迟
+
+fields @timestamp, duration_ms, responseType, sessionId
+| filter event = "task_lifecycle" and phase = "message_roundtrip"
+| stats count() as total,
+        avg(duration_ms) as avg_ms,
+        pct(duration_ms, 50) as p50,
+        pct(duration_ms, 90) as p90,
+        max(duration_ms) as max_ms
+  by bin(1h)
+| sort bin asc

@@ -1,0 +1,9 @@
+# 错误分类统计
+# 日志组: /ecs/ai-shell-prod 或 /ecs/ai-shell-stage
+# 用途: 快速了解错误分布，定位高频问题
+
+fields @timestamp, message, level, sessionId, userId
+| filter level = "error"
+| stats count() as total by message
+| sort total desc
+| limit 20

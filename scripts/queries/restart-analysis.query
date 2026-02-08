@@ -1,0 +1,11 @@
+# Task 重启成功率和耗时
+# 日志组: /ecs/ai-shell-prod 或 /ecs/ai-shell-stage
+# 用途: 监控空闲超时后的 Task 自动重启效果
+
+fields @timestamp, duration_ms, success, sessionId, userId
+| filter event = "task_lifecycle" and phase = "restart"
+| stats count() as total,
+        sum(case when success = 1 then 1 else 0 end) as success_count,
+        sum(case when success = 0 then 1 else 0 end) as failure_count,
+        avg(duration_ms) as avg_ms,
+        max(duration_ms) as max_ms

@@ -1,0 +1,14 @@
+# 启动耗时分布 (P50/P90/P99)
+# 日志组: /ecs/ai-shell-prod 或 /ecs/ai-shell-stage
+# 用途: 监控 Task 从启动到就绪的总耗时
+
+fields @timestamp, duration_ms, sessionId, userId
+| filter event = "task_lifecycle" and phase = "task_ready"
+| stats count() as total,
+        avg(duration_ms) as avg_ms,
+        pct(duration_ms, 50) as p50,
+        pct(duration_ms, 90) as p90,
+        pct(duration_ms, 99) as p99,
+        max(duration_ms) as max_ms
+  by bin(1h)
+| sort bin asc
