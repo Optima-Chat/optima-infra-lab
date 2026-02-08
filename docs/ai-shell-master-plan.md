@@ -1,7 +1,7 @@
 # AI Shell 综合改进计划：稳定性 + 可观测性 + 架构迁移
 
 > **日期**: 2026-02-08
-> **状态**: 计划中
+> **状态**: Phase 0-1 已完成，已合并 main，Stage 已验证，Prod 待部署
 > **涉及仓库**: optima-ai-shell, optima-terraform, optima-infra-lab
 
 ---
@@ -15,17 +15,20 @@
 ## 计划总览
 
 ```
-Phase 0: 紧急修复 (1天)        ← 修复当前线上 P0 问题
-Phase 1: 可观测性 (2-3天)      ← 统一日志 + 关键指标 + 日报脚本
+Phase 0: 紧急修复 (1天)        ✅ 已完成 — 已合并 main，Stage 已验证
+Phase 1: 可观测性 (2-3天)      ✅ 已完成 — 已合并 main，Stage 日志/日报/查询模板均已验证
 Phase 2: 共享 AP + 固定 TD (3-5天) ← 架构迁移第一步（详见 ai-shell-migration-plan.md Phase 1）
 Phase 3: 预热池 (5-7天)        ← 启动时间 5s → 260ms（详见 ai-shell-migration-plan.md Phase 2）
 ```
 
 ---
 
-## Phase 0: 紧急修复 (1天)
+## Phase 0: 紧急修复 (1天) ✅ 已完成
 
-### 0.1 IAM 权限修复
+> **分支**: `feature/phase0-stability-fixes` → 已合并 `main` (2026-02-08)
+> **提交**: `42f5e0d`, `cc4db1f`, `8d62d55`
+
+### 0.1 IAM 权限修复 ✅
 
 **问题**: session-gateway 调用 `ecs:DescribeTasks` 时返回 `AccessDeniedException`，导致 task 状态检查失败、重启逻辑无法正确执行。排查报告中记录了 **10 次**此类错误。
 
@@ -40,9 +43,11 @@ Phase 3: 预热池 (5-7天)        ← 启动时间 5s → 260ms（详见 ai-she
 
 **影响**: 修复 10 次 `AccessDeniedException` 导致的 task 重启失败
 
+**落地状态**: ✅ 代码已在 `modules/ai-shell-ecs/main.tf` 中（stage + prod 共用模块）。IAM 权限已 apply 生效。
+
 ---
 
-### 0.2 Session Resume 竞态条件修复
+### 0.2 Session Resume 竞态条件修复 ✅
 
 **问题**: 用户断线重连时，存在两个竞态场景导致 "No ECS bridge found" 错误（共 **11 次**）：
 
@@ -88,7 +93,7 @@ if (bridge && 'handleTaskConnection' in bridge) {
 
 ---
 
-### 0.3 Task 重启失败时通知客户端
+### 0.3 Task 重启失败时通知客户端 ✅
 
 **问题**: `restartTask()` 在 `start()` 阶段失败时，虽然有 catch 块发送错误消息给客户端，但某些中间错误（如 `DescribeTasks` 失败）会在 `start()` 内部被吞掉，导致客户端永远等待。
 
@@ -125,20 +130,40 @@ try {
 
 ---
 
-### Phase 0 验证
+### 0.4 Restart 期间 detachWebSocket 误杀竞态条件 ✅
 
-- [ ] 部署后在 Stage 环境模拟空闲超时 → 重连场景，确认 task 重启成功
-- [ ] 检查 CloudWatch 无 `AccessDeniedException` 错误
-- [ ] 模拟快速断开重连，确认无 "No ECS bridge found"
-- [ ] 模拟 `start()` 失败场景，确认客户端收到错误消息
+**问题**: `restartTask()` 过程中，`start()` 调用 `attachWebSocket(this.ws)` 时，`attachWebSocket()` 先调用 `detachWebSocket()` 清理旧连接。但此时 `processingState` 已被 `doRestartTask()` 设为 `'idle'`，导致 `detachWebSocket()` 认为 task 空闲 → 调用 `stop()` → **杀死刚启动的新 task**。restart 流程继续报告 "success" 但 task 实际已死。
+
+**发现方式**: 通过 Stage 环境用户日志排查（session `ce751bc9`），精确复现了时间线。
+
+**修复** (`8d62d55`):
+
+1. **`detachWebSocket()`**: 增加 `isRestarting` 守卫，restart 期间跳过 `stop()`
+2. **`resetIdleTimer()`**: 增加 `isRestarting` 守卫，restart 期间不启动 idle timer
+3. **`doRestartTask()`**: restore 和 flush 后验证 `taskWs` 仍然存活
+
+**验证**: Stage 部署后确认 `Skipping stop during restart` 日志出现，restart 成功率恢复正常。
 
 ---
 
-## Phase 1: 可观测性 (2-3天)
+### Phase 0 验证 ✅
+
+- [x] 部署后在 Stage 环境模拟空闲超时 → 重连场景，确认 task 重启成功
+- [x] 检查 CloudWatch 无 `AccessDeniedException` 错误
+- [x] 模拟快速断开重连，确认无 "No ECS bridge found"
+- [x] 模拟 `start()` 失败场景，确认客户端收到错误消息
+- [x] 验证 `isRestarting` 守卫生效（`Skipping stop during restart` 日志确认）
+
+---
+
+## Phase 1: 可观测性 (2-3天) ✅ 已完成
+
+> **提交**: `a9ef9a2` (核心 7 文件), `f9bfa2f` (剩余 18 文件扫尾)
+> **infra-lab 提交**: `fb3059d` (日报脚本修正), `ed036a3` (日报 + 查询模板)
 
 **目标**: 统一日志格式 + 关键链路耗时记录 + 自动日报
 
-### 1.1 统一结构化日志
+### 1.1 统一结构化日志 ✅
 
 **现状问题**:
 
@@ -211,7 +236,7 @@ export const containerLogger = baseLogger.child({ module: 'container-bridge' });
 
 ---
 
-### 1.2 关键链路事件和耗时埋点
+### 1.2 关键链路事件和耗时埋点 ✅
 
 在 `ecs-bridge.ts` 中增加结构化的 **lifecycle event** 日志，方便 CloudWatch Logs Insights 查询。
 
@@ -310,7 +335,7 @@ this.log('info', 'task_lifecycle', {
 
 ---
 
-### 1.3 日报脚本 (Python)
+### 1.3 日报脚本 (Python) ✅
 
 **新文件**: `ai-tools/optima-infra-lab/scripts/daily_report.py`
 
@@ -367,7 +392,7 @@ this.log('info', 'task_lifecycle', {
 
 ---
 
-### 1.4 CloudWatch Logs Insights 查询模板
+### 1.4 CloudWatch Logs Insights 查询模板 ✅
 
 查询模板内嵌在 Python 脚本中，同时导出为独立文件方便手动使用。
 
@@ -410,11 +435,25 @@ fields @timestamp, @message
 
 ---
 
-### Phase 1 验证
+### Phase 1 验证 ✅
 
-- [ ] 部署后检查日志格式统一为 JSON
-- [ ] 运行日报脚本，确认各指标正确
-- [ ] 在 CloudWatch Logs Insights 中执行预置查询，确认可以得到启动耗时 P50/P90/P99
+- [x] 部署后检查日志格式统一为 JSON — Stage 已确认所有模块输出结构化 JSON
+- [x] 运行日报脚本，确认各指标正确 — `python3 scripts/daily_report.py --env stage --date 2026-02-08` 正常输出
+- [x] 在 CloudWatch Logs Insights 中执行预置查询 — startup-latency, restart-analysis, message-roundtrip 均返回有效数据
+- [x] Stage 实测数据: 启动 P50=5.4s, P90=8.6s; PENDING→RUNNING P50=3.7s, P90=5.1s; 消息首字延迟 4.6s
+
+---
+
+## ⚠️ 待处理: Terraform Launch Template 未 Apply
+
+`infrastructure/optima-terraform/stacks/ai-shell-ecs/` 中有 **未 apply 的变更**，stage 和 prod 都受影响：
+
+1. **AMI 更新**: `ami-0bbc16506b71ca849` → `ami-080e5034ac2b93626`（新版 ECS-optimized AMI）
+2. **user_data 镜像预拉取**: 增加 EC2 启动时后台 `docker pull` 预拉取 AI Shell 镜像
+
+**影响**: 当前 PENDING→RUNNING 的 3.7s (P50) 包含了每次现场从 ECR 拉取镜像的时间。Apply 后新 EC2 实例将预缓存镜像，预计可显著降低此阶段耗时。
+
+**操作**: 需要 `terraform apply` 更新 launch template，然后 instance refresh 或终止旧实例让 ASG 用新模板重建。
 
 ---
 
@@ -458,19 +497,26 @@ fields @timestamp, @message
 
 ## 关键文件变更清单
 
-| 文件 | Phase | 改动类型 |
-|------|-------|---------|
-| `infrastructure/optima-terraform/stacks/ai-shell-ecs/main.tf` | 0 | 添加 `ecs:DescribeTasks` IAM 权限 |
-| `session-gateway/src/index.ts` | 0 | handleTaskConnection 重试逻辑 |
-| `session-gateway/src/ws-connection-handler.ts` | 0, 1 | 竞态修复 + 结构化日志 |
-| `session-gateway/src/bridges/ecs-bridge.ts` | 0, 1, 2 | 错误通知 + lifecycle 埋点 + 架构迁移 |
-| `session-gateway/src/utils/logger.ts` | 1 | 重写为结构化 logger |
-| `session-gateway/src/container-bridge.ts` | 1 | console.log → 结构化日志 |
-| `session-gateway/src/services/session-cleanup.service.ts` | 1 | console.log → 结构化日志 |
-| `optima-infra-lab/scripts/daily_report.py` | 1 | **新增** 日报脚本 |
-| `optima-infra-lab/scripts/queries/*.query` | 1 | **新增** 查询模板 |
-| `session-gateway/src/services/access-point-manager.ts` | 2 | 简化为读取固定 AP |
-| `session-gateway/src/services/warm-pool-manager.ts` | 3 | **新增** 预热池管理 |
+| 文件 | Phase | 改动类型 | 状态 |
+|------|-------|---------|------|
+| `infrastructure/optima-terraform/modules/ai-shell-ecs/main.tf` | 0 | 添加 `ecs:DescribeTasks` IAM 权限 | ✅ 已 apply |
+| `infrastructure/optima-terraform/modules/ai-shell-ecs/main.tf` | — | Launch Template AMI + 镜像预拉取 user_data | ⚠️ 代码已提交但未 apply |
+| `session-gateway/src/index.ts` | 0, 1 | handleTaskConnection 重试 + 结构化日志 | ✅ |
+| `session-gateway/src/ws-connection-handler.ts` | 0, 1 | 竞态修复 + 结构化日志 | ✅ |
+| `session-gateway/src/bridges/ecs-bridge.ts` | 0, 1 | 错误通知 + lifecycle 埋点 + restart 竞态修复 | ✅ |
+| `session-gateway/src/utils/logger.ts` | 1 | 重写为结构化 logger | ✅ |
+| `session-gateway/src/container-bridge.ts` | 1 | console.log → 结构化日志 | ✅ |
+| `session-gateway/src/services/session-cleanup.service.ts` | 1 | console.log → 结构化日志 | ✅ |
+| `session-gateway/src/routes/files.ts` | 1 | apiLogger → createLogger 统一 | ✅ |
+| `session-gateway/src/auth.ts` | 1 | 结构化日志 | ✅ |
+| `session-gateway/src/bridges/lambda-bridge.ts` | 1 | 结构化日志 | ✅ |
+| `session-gateway/src/routes/*.ts` (5 文件) | 1 | 结构化日志 | ✅ |
+| `session-gateway/src/services/*.ts` (6 文件) | 1 | 结构化日志 | ✅ |
+| `session-gateway/src/utils/message-transformer.ts` | 1 | 结构化日志 | ✅ |
+| `optima-infra-lab/scripts/daily_report.py` | 1 | **新增** 日报脚本 | ✅ |
+| `optima-infra-lab/scripts/queries/*.query` (6 文件) | 1 | **新增** 查询模板 | ✅ |
+| `session-gateway/src/services/access-point-manager.ts` | 2 | 简化为读取固定 AP | 未开始 |
+| `session-gateway/src/services/warm-pool-manager.ts` | 3 | **新增** 预热池管理 | 未开始 |
 
 ---
 
