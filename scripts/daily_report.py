@@ -60,7 +60,7 @@ fields @timestamp, phase, duration_ms
 
     "restart_stats": """
 fields @timestamp, success, duration_ms
-| filter event = "task_lifecycle" and phase = "restart"
+| filter event = "task_lifecycle" and phase = "restart" and ispresent(success)
 | stats count() as total,
         avg(duration_ms) as avg_restart_ms
   by success
