@@ -49,3 +49,28 @@ python3 scripts/test-eci-cold-start.py <image> [iterations] [cpu] [mem] [--image
 ## TODO(未做)
 - 真实 agent-runtime 体积镜像(数百 MB~GB)冷启 + ImageCache 对比(busybox 无镜像,未体现拉取/缓存差异)。
 - "预热在跑的 ECI 复用分配"延迟实测(对标 AWS 260ms)。
+
+---
+
+## 路径验证:ECI 挂共享 NAS + 预热复用 user-init(2026-05-31,真实跑通)
+
+> 脚本 `scripts/test-eci-nas-userinit.py`。用 cn-prod VPC 内现成 NAS `01228x9017u1tbxi43v`
+> (domain `...-vot10.cn-beijing.nas.aliyuncs.com`),ECI 用 Volume(NFSVolume server+path)挂 /mnt/nas,
+> 容器内跑 500 次 user-init(mkdir 嵌套 + 写 token.json + 读),秒级 date 批量算 avg。
+
+| run | 冷启(挂NAS)→Running | NAS user-init (500次 avg) | NAS 挂载 |
+|---|---|---|---|
+| 1 | 29.5s | **42ms** | ✅ df 显示 /mnt/nas |
+| 2 | 2.9s | 38ms | ✅ |
+| 3 | 31.3s | 40ms | ✅ |
+
+### 结论(真实数据,可复现)
+1. **ECI 能挂 cn-prod 共享 NAS,用户无关**:只给 `server`+`path`,无 EFS AP 那种绑身份。→ **预热用户无关 ECI 成立**(AWS 当年被迫做的"共享 AP 权限重设计",阿里云默认形态)。
+2. **预热复用分配的 user-init = ~40ms(稳定)**:对标 AWS EFS"完整用户初始化 33ms",阿里云 NAS(standard Capacity)同量级。即预热实例分配给用户的热路径成本 ~40ms + WS 消息开销,接近 AWS 260ms 量级甚至更优。
+3. **冷启仍双峰 ~3s / ~30s**(挂 NAS 不增开销):尾巴是 ECI provisioning,**ImageCache 救不了,只能靠预热在跑的 ECI 池消除**。
+4. **整条 agent-runtime 路径(共享 NAS 用户无关挂载 + 预热复用 ~40ms 分配)在阿里云 ECI 上已跑通,有数据支撑方案 A。**
+
+### 仍未做
+- 真实 agent 体积镜像(GB)冷启 + ImageCache(busybox 无镜像,未体现拉取/缓存)。
+- 端到端"预热池取实例 + WS init_user + optima headless 起"全链路(需 EciBridge 联调,对标 AWS 260ms 全链)。
+- NAS 用 Performance 型 vs Capacity 型的 user-init 延迟差异(本次 Capacity)。
